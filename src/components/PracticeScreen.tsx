@@ -19,9 +19,10 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
   const [confidence, setConfidence] = useState<number>(0);
   const [inputLevel, setInputLevel] = useState<number>(0);
   const [isGateOpen, setIsGateOpen] = useState(false);
+  const [targetPrompt, setTargetPrompt] = useState<string>('');
   const [feedback, setFeedback] = useState<string>('');
   const [feedbackType, setFeedbackType] = useState<'correct' | 'incorrect' | 'neutral'>('neutral');
-  const [consecutiveCorrect, setConsecutiveCorrect] = useState(0);
+  const consecutiveCorrectRef = useRef(0);
   
   const audioEngine = useRef<AudioEngine | null>(null);
   const sessionManager = useRef<SessionManager | null>(null);
@@ -31,7 +32,8 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
     // Initialize session
     sessionManager.current = new SessionManager(config);
     const firstPrompt = sessionManager.current.nextPrompt();
-    setFeedback(`Play: ${firstPrompt.displayName} on ${getStringName(firstPrompt.position.string)} string (frets 0-${config.maxFret})`);
+    setTargetPrompt(`${firstPrompt.displayName} on ${getStringName(firstPrompt.position.string)} string`);
+    setFeedback('Ready to listen');
     
     return () => {
       stopListening();
@@ -63,14 +65,17 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
             );
             
             if (validation.isCorrect) {
-              setConsecutiveCorrect(prev => prev + 1);
+              consecutiveCorrectRef.current += 1;
               
               // Require 2-3 consecutive correct frames for debounce
-              if (consecutiveCorrect >= 2) {
+              if (consecutiveCorrectRef.current >= 2) {
                 handleCorrect(result.frequency, validation.cents);
+              } else {
+                setFeedback('Keep holding...');
+                setFeedbackType('neutral');
               }
             } else {
-              setConsecutiveCorrect(0);
+              consecutiveCorrectRef.current = 0;
               setFeedback(validation.feedback);
               setFeedbackType('incorrect');
             }
@@ -79,7 +84,9 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
           setCurrentNote('—');
           setCurrentFreq(0);
           setConfidence(0);
-          setConsecutiveCorrect(0);
+          consecutiveCorrectRef.current = 0;
+          setFeedback('');
+          setFeedbackType('neutral');
         }
       });
       
@@ -131,14 +138,15 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
     });
     
     // Show success feedback
-    setFeedback('Correct!');
+    setFeedback('✓ Correct!');
     setFeedbackType('correct');
-    setConsecutiveCorrect(0);
+    consecutiveCorrectRef.current = 0;
     
     // Advance to next prompt after brief delay
     setTimeout(() => {
       const nextPrompt = sessionManager.current!.nextPrompt();
-      setFeedback(`Play: ${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string (frets 0-${config.maxFret})`);
+      setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
+      setFeedback('');
       setFeedbackType('neutral');
     }, 800);
   };
@@ -153,7 +161,9 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
       
       setTimeout(() => {
         const nextPrompt = sessionManager.current!.nextPrompt();
-        setFeedback(`Play: ${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string (frets 0-${config.maxFret})`);
+        setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
+        setFeedback('');
+        setFeedbackType('neutral');
       }, 2000);
     }
   };
@@ -176,13 +186,18 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
       }`}>
         <div className="text-center space-y-4">
           <h2 className="text-2xl font-semibold text-muted-foreground">Target</h2>
-          <p className={`text-5xl font-bold transition-colors duration-200 ${
-            feedbackType === 'correct' ? 'text-success' :
-            feedbackType === 'incorrect' ? 'text-error' :
-            'text-foreground'
-          }`}>
-            {feedback}
+          <p className="text-5xl font-bold text-foreground min-h-[60px] flex items-center justify-center">
+            {targetPrompt}
           </p>
+          {feedback && (
+            <p className={`text-2xl font-semibold transition-colors duration-200 min-h-[32px] ${
+              feedbackType === 'correct' ? 'text-success' :
+              feedbackType === 'incorrect' ? 'text-error' :
+              'text-muted-foreground'
+            }`}>
+              {feedback}
+            </p>
+          )}
         </div>
       </Card>
 
@@ -202,15 +217,15 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
 
           {/* Input Level Meter */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center justify-between text-sm min-h-[20px]">
               <span className="text-muted-foreground">Input Level</span>
               <span className={isGateOpen ? 'text-accent' : 'text-muted-foreground'}>
                 {isGateOpen ? 'Gate Open' : 'Gate Closed'}
               </span>
             </div>
-            <div className="h-3 bg-muted rounded-full overflow-hidden">
+            <div className="h-3 bg-muted rounded-full overflow-hidden relative">
               <div 
-                className="h-full bg-accent transition-all duration-100"
+                className="h-full bg-accent transition-all duration-100 absolute left-0 top-0"
                 style={{ 
                   width: `${Math.min(inputLevel * 1000, 100)}%`,
                   boxShadow: isGateOpen ? '0 0 8px hsl(var(--glow-info))' : 'none'
@@ -220,20 +235,22 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
           </div>
 
           {/* Confidence */}
-          {confidence > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Confidence</span>
-                <span className="font-mono">{(confidence * 100).toFixed(0)}%</span>
-              </div>
-              <div className="h-2 bg-muted rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-primary transition-all duration-200"
-                  style={{ width: `${confidence * 100}%` }}
-                />
-              </div>
-            </div>
-          )}
+          <div className="space-y-2 min-h-[44px]">
+            {confidence > 0 && (
+              <>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Confidence</span>
+                  <span className="font-mono">{(confidence * 100).toFixed(0)}%</span>
+                </div>
+                <div className="h-2 bg-muted rounded-full overflow-hidden relative">
+                  <div 
+                    className="h-full bg-primary transition-all duration-200 absolute left-0 top-0"
+                    style={{ width: `${confidence * 100}%` }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </Card>
 
