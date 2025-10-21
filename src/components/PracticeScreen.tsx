@@ -27,6 +27,7 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
   const audioEngine = useRef<AudioEngine | null>(null);
   const sessionManager = useRef<SessionManager | null>(null);
   const levelInterval = useRef<NodeJS.Timeout | null>(null);
+  const promptAnswered = useRef(false);
 
   useEffect(() => {
     // Initialize session
@@ -34,6 +35,7 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
     const firstPrompt = sessionManager.current.nextPrompt();
     setTargetPrompt(`${firstPrompt.displayName} on ${getStringName(firstPrompt.position.string)} string`);
     setFeedback('Ready to listen');
+    promptAnswered.current = false;
     
     return () => {
       stopListening();
@@ -64,17 +66,18 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
               config.toleranceCents
             );
             
-            if (validation.isCorrect) {
+            if (validation.isCorrect && !promptAnswered.current) {
               consecutiveCorrectRef.current += 1;
               
               // Require 2-3 consecutive correct frames for debounce
               if (consecutiveCorrectRef.current >= 2) {
+                promptAnswered.current = true;
                 handleCorrect(result.frequency, validation.cents);
               } else {
                 setFeedback('Keep holding...');
                 setFeedbackType('neutral');
               }
-            } else {
+            } else if (!promptAnswered.current) {
               consecutiveCorrectRef.current = 0;
               setFeedback(validation.feedback);
               setFeedbackType('incorrect');
@@ -137,8 +140,8 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
       millisToCorrect: elapsed
     });
     
-    // Show success feedback
-    setFeedback('✓ Correct!');
+    // Show success feedback with animation
+    setFeedback('✓ Correct! Nice work!');
     setFeedbackType('correct');
     consecutiveCorrectRef.current = 0;
     
@@ -148,12 +151,14 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
       setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
       setFeedback('');
       setFeedbackType('neutral');
-    }, 800);
+      promptAnswered.current = false;
+    }, 1200);
   };
 
   const handleReveal = () => {
-    if (!sessionManager.current) return;
+    if (!sessionManager.current || promptAnswered.current) return;
     
+    promptAnswered.current = true;
     const answer = sessionManager.current.revealAnswer();
     if (answer) {
       setFeedback(`Answer: Fret ${answer.fret} on ${getStringName(answer.string)} string`);
@@ -164,6 +169,7 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
         setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
         setFeedback('');
         setFeedbackType('neutral');
+        promptAnswered.current = false;
       }, 2000);
     }
   };
