@@ -1,13 +1,59 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from 'react';
+import SettingsScreen from '@/components/SettingsScreen';
+import PracticeScreen from '@/components/PracticeScreen';
+import ResultsScreen from '@/components/ResultsScreen';
+import { SessionConfig, SessionStats } from '@/lib/trainer/sessionManager';
+
+type Screen = 'settings' | 'practice' | 'results';
 
 const Index = () => {
+  const [currentScreen, setCurrentScreen] = useState<Screen>('settings');
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null);
+  const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
+
+  const handleStart = (config: SessionConfig) => {
+    setSessionConfig(config);
+    setCurrentScreen('practice');
+  };
+
+  const handleComplete = (stats: SessionStats) => {
+    setSessionStats(stats);
+    setCurrentScreen('results');
+  };
+
+  const handleRestart = () => {
+    if (sessionConfig) {
+      setCurrentScreen('practice');
+    }
+  };
+
+  const handleNewSession = () => {
+    setCurrentScreen('settings');
+    setSessionConfig(null);
+    setSessionStats(null);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <>
+      {currentScreen === 'settings' && (
+        <SettingsScreen onStart={handleStart} />
+      )}
+      
+      {currentScreen === 'practice' && sessionConfig && (
+        <PracticeScreen 
+          config={sessionConfig} 
+          onComplete={handleComplete}
+        />
+      )}
+      
+      {currentScreen === 'results' && sessionStats && (
+        <ResultsScreen 
+          stats={sessionStats}
+          onRestart={handleRestart}
+          onNewSession={handleNewSession}
+        />
+      )}
+    </>
   );
 };
 
