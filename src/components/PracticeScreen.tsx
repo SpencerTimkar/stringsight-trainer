@@ -1,18 +1,26 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { AudioEngine } from '@/lib/audio/audioEngine';
-import { SessionManager, SessionConfig } from '@/lib/trainer/sessionManager';
-import { parseFrequency, validatePosition, getStringName } from '@/lib/music/noteMapping';
+import { SessionManager, SessionConfig, Prompt, SessionStats } from '@/lib/trainer/sessionManager';
+import { parseFrequency, validatePosition, ValidationResult } from '@/lib/music/noteMapping';
+import { DIFFICULTY_SETTINGS } from '@/lib/trainer/difficulty';
+import { applyMasteryUpdates } from '@/lib/trainer/mastery';
 import { toast } from 'sonner';
-import { Mic, MicOff, Volume2, Eye } from 'lucide-react';
+import { Mic, MicOff, Eye } from 'lucide-react';
 
 interface PracticeScreenProps {
   config: SessionConfig;
-  onComplete: (stats: any) => void;
+  gateThreshold: number;
+  onComplete: (stats: SessionStats) => void;
 }
 
-export default function PracticeScreen({ config, onComplete }: PracticeScreenProps) {
+export default function PracticeScreen({ config, gateThreshold, onComplete }: PracticeScreenProps) {
+  const difficultySettings = useMemo(
+    () => DIFFICULTY_SETTINGS[config.difficulty] ?? DIFFICULTY_SETTINGS.easy,
+    [config.difficulty]
+  );
+  
   const [isListening, setIsListening] = useState(false);
   const [currentNote, setCurrentNote] = useState<string>('—');
   const [currentFreq, setCurrentFreq] = useState<number>(0);
@@ -22,63 +30,289 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
   const [targetPrompt, setTargetPrompt] = useState<string>('');
   const [feedback, setFeedback] = useState<string>('');
   const [feedbackType, setFeedbackType] = useState<'correct' | 'incorrect' | 'neutral'>('neutral');
+  const [attemptsLeft, setAttemptsLeft] = useState<number>(difficultySettings.maxAttempts);
+  const [timeLeft, setTimeLeft] = useState<number>(difficultySettings.timeLimit);
   const consecutiveCorrectRef = useRef(0);
   
   const audioEngine = useRef<AudioEngine | null>(null);
   const sessionManager = useRef<SessionManager | null>(null);
   const levelInterval = useRef<NodeJS.Timeout | null>(null);
   const promptAnswered = useRef(false);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const attemptsRemainingRef = useRef<number>(difficultySettings.maxAttempts);
+  const timeRemainingRef = useRef<number>(difficultySettings.timeLimit);
+  const pendingAttemptRef = useRef<{
+    freq: number;
+    midi: number | null;
+    cents: number;
+    confidence: number;
+    frames: number;
+  } | null>(null);
+  const lastAttemptRef = useRef<{
+    freq: number | null;
+    midi: number | null;
+    cents: number;
+    confidence: number;
+  } | null>(null);
+  const failureHandledRef = useRef(false);
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  function handleFailure(_reason: 'timeout' | 'attempts') {
+    if (failureHandledRef.current || !sessionManager.current) return;
+    
+    if (pendingAttemptRef.current && pendingAttemptRef.current.frames >= 3) {
+      lastAttemptRef.current = {
+        freq: pendingAttemptRef.current.freq,
+        midi: pendingAttemptRef.current.midi,
+        cents: pendingAttemptRef.current.cents,
+        confidence: pendingAttemptRef.current.confidence
+      };
+    }
+    
+    failureHandledRef.current = true;
+    clearTimer();
+    promptAnswered.current = true;
+    
+    const attemptData = lastAttemptRef.current ?? {
+      freq: null,
+      midi: null,
+      cents: 0,
+      confidence: 0
+    };
+    
+    sessionManager.current.recordAttempt({
+      detectedFreq: attemptData.freq ?? null,
+      detectedMidi: attemptData.midi ?? null,
+      cents: attemptData.cents,
+      confidence: attemptData.confidence,
+      isCorrect: false,
+      revealed: false,
+      millisToCorrect: sessionManager.current.getElapsedTime()
+    });
+    
+    pendingAttemptRef.current = null;
+    lastAttemptRef.current = null;
+    attemptsRemainingRef.current = 0;
+    timeRemainingRef.current = 0;
+    setAttemptsLeft(0);
+    setTimeLeft(0);
+    consecutiveCorrectRef.current = 0;
+    setFeedback('');
+    setFeedbackType('incorrect');
+    
+    setTimeout(() => {
+      if (!sessionManager.current) return;
+      const nextPrompt = sessionManager.current.nextPrompt();
+      applyPrompt(nextPrompt);
+    }, 1200);
+  }
+
+  function finalizeAttempt() {
+    if (promptAnswered.current || failureHandledRef.current) {
+      pendingAttemptRef.current = null;
+      return;
+    }
+    
+    const pending = pendingAttemptRef.current;
+    if (!pending) return;
+    
+    pendingAttemptRef.current = null;
+    
+    if (pending.frames < 5) {
+      return;
+    }
+    
+    lastAttemptRef.current = {
+      freq: pending.freq,
+      midi: pending.midi,
+      cents: pending.cents,
+      confidence: pending.confidence
+    };
+    
+    const nextRemaining = attemptsRemainingRef.current - 1;
+    attemptsRemainingRef.current = Math.max(nextRemaining, 0);
+    setAttemptsLeft(Math.max(nextRemaining, 0));
+    
+    if (attemptsRemainingRef.current <= 0) {
+      handleFailure('attempts');
+    }
+  }
+
+  function startTimer() {
+    if (difficultySettings.timeLimit <= 0 || failureHandledRef.current || promptAnswered.current) return;
+    
+    clearTimer();
+    timerRef.current = setInterval(() => {
+      setTimeLeft(prev => {
+        if (promptAnswered.current || failureHandledRef.current) {
+          return prev;
+        }
+        
+        if (prev <= 1) {
+          clearTimer();
+          timeRemainingRef.current = 0;
+          handleFailure('timeout');
+          return 0;
+        }
+        
+        const next = prev - 1;
+        timeRemainingRef.current = next;
+        return next;
+      });
+    }, 1000);
+  }
+
+  function applyPrompt(prompt: Prompt, options: { preserveFeedback?: boolean } = {}) {
+    setTargetPrompt(`${prompt.displayName} on string ${prompt.position.string}`);
+    attemptsRemainingRef.current = difficultySettings.maxAttempts;
+    timeRemainingRef.current = difficultySettings.timeLimit;
+    setAttemptsLeft(difficultySettings.maxAttempts);
+    setTimeLeft(difficultySettings.timeLimit);
+    pendingAttemptRef.current = null;
+    lastAttemptRef.current = null;
+    failureHandledRef.current = false;
+    consecutiveCorrectRef.current = 0;
+    promptAnswered.current = false;
+    
+    if (!options.preserveFeedback) {
+      setFeedback('');
+      setFeedbackType('neutral');
+    }
+    
+    clearTimer();
+    if (audioEngine.current) {
+      startTimer();
+    }
+  }
+
+  const stopListening = () => {
+    if (audioEngine.current) {
+      audioEngine.current.stop();
+      audioEngine.current = null;
+    }
+    
+    if (levelInterval.current) {
+      clearInterval(levelInterval.current);
+      levelInterval.current = null;
+    }
+    
+    clearTimer();
+    setIsListening(false);
+    setInputLevel(0);
+    setIsGateOpen(false);
+  };
 
   useEffect(() => {
-    // Initialize session
+    attemptsRemainingRef.current = difficultySettings.maxAttempts;
+    timeRemainingRef.current = difficultySettings.timeLimit;
+    setAttemptsLeft(difficultySettings.maxAttempts);
+    setTimeLeft(difficultySettings.timeLimit);
+  }, [difficultySettings]);
+
+  useEffect(() => {
     sessionManager.current = new SessionManager(config);
     const firstPrompt = sessionManager.current.nextPrompt();
-    setTargetPrompt(`${firstPrompt.displayName} on ${getStringName(firstPrompt.position.string)} string`);
+    applyPrompt(firstPrompt, { preserveFeedback: true });
     setFeedback('Ready to listen');
-    promptAnswered.current = false;
+    setFeedbackType('neutral');
     
     return () => {
       stopListening();
     };
-  }, [config]);
+  }, [config, difficultySettings]);
 
   const startListening = async () => {
     try {
+      if (audioEngine.current) {
+        audioEngine.current.stop();
+        audioEngine.current = null;
+      }
+      
       audioEngine.current = new AudioEngine({
-        gateThreshold: 0.01
+        gateThreshold: Math.max(0.001, Math.min(0.1, gateThreshold || 0.01))
       });
       
       await audioEngine.current.start((result) => {
         if (!sessionManager.current) return;
         
+        if (promptAnswered.current && !result) {
+          setCurrentNote('—');
+          setCurrentFreq(0);
+          setConfidence(0);
+          return;
+        }
+        
         if (result) {
-          const note = parseFrequency(result.frequency);
-          setCurrentNote(`${note.noteName}${note.octave}`);
-          setCurrentFreq(result.frequency);
-          setConfidence(result.confidence);
-          
-          // Check if correct
           const currentPrompt = sessionManager.current.getCurrentPrompt();
+          let displayFrequency = result.frequency;
+          let validation: ValidationResult | null = null;
+          
           if (currentPrompt) {
-            const validation = validatePosition(
+            validation = validatePosition(
               result.frequency,
               currentPrompt.position,
               config.toleranceCents
             );
-            
-            if (validation.isCorrect && !promptAnswered.current) {
+            displayFrequency = validation.normalizedFreq;
+          }
+          
+          const note = parseFrequency(displayFrequency);
+          setCurrentNote(`${note.noteName}${note.octave}`);
+          setCurrentFreq(displayFrequency);
+          setConfidence(result.confidence);
+          
+          if (promptAnswered.current) {
+            return;
+          }
+          
+          if (currentPrompt && validation) {
+            if (validation.isCorrect) {
               consecutiveCorrectRef.current += 1;
               
-              // Require 2-3 consecutive correct frames for debounce
               if (consecutiveCorrectRef.current >= 2) {
                 promptAnswered.current = true;
-                handleCorrect(result.frequency, validation.cents);
+                pendingAttemptRef.current = null;
+                lastAttemptRef.current = null;
+                handleCorrect(validation.normalizedFreq, validation.cents, validation.octaveAdjusted);
               } else {
                 setFeedback('Keep holding...');
                 setFeedbackType('neutral');
               }
-            } else if (!promptAnswered.current) {
+            } else {
               consecutiveCorrectRef.current = 0;
+              
+              const pending = pendingAttemptRef.current;
+              if (pending) {
+                pendingAttemptRef.current = {
+                  freq: displayFrequency,
+                  midi: note.midi,
+                  cents: validation.cents,
+                  confidence: result.confidence,
+                  frames: pending.frames + 1
+                };
+              } else {
+                pendingAttemptRef.current = {
+                  freq: displayFrequency,
+                  midi: note.midi,
+                  cents: validation.cents,
+                  confidence: result.confidence,
+                  frames: 1
+                };
+              }
+              
+              lastAttemptRef.current = {
+                freq: displayFrequency,
+                midi: note.midi,
+                cents: validation.cents,
+                confidence: result.confidence
+              };
+              
               setFeedback(validation.feedback);
               setFeedbackType('incorrect');
             }
@@ -87,15 +321,22 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
           setCurrentNote('—');
           setCurrentFreq(0);
           setConfidence(0);
-          consecutiveCorrectRef.current = 0;
-          setFeedback('');
-          setFeedbackType('neutral');
+          
+          if (!promptAnswered.current) {
+            consecutiveCorrectRef.current = 0;
+            setFeedback('');
+            setFeedbackType('neutral');
+            finalizeAttempt();
+          }
         }
       });
       
       setIsListening(true);
       
-      // Start level monitoring
+      if (!promptAnswered.current) {
+        startTimer();
+      }
+      
       levelInterval.current = setInterval(() => {
         if (audioEngine.current) {
           setInputLevel(audioEngine.current.getInputLevel());
@@ -109,26 +350,14 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
     }
   };
 
-  const stopListening = () => {
-    if (audioEngine.current) {
-      audioEngine.current.stop();
-      audioEngine.current = null;
-    }
-    
-    if (levelInterval.current) {
-      clearInterval(levelInterval.current);
-      levelInterval.current = null;
-    }
-    
-    setIsListening(false);
-    setInputLevel(0);
-    setIsGateOpen(false);
-  };
-
-  const handleCorrect = (freq: number, cents: number) => {
+  const handleCorrect = (freq: number, cents: number, octaveAdjusted: boolean) => {
     if (!sessionManager.current) return;
     
-    // Record attempt
+    clearTimer();
+    failureHandledRef.current = true;
+    pendingAttemptRef.current = null;
+    lastAttemptRef.current = null;
+    
     const elapsed = sessionManager.current.getElapsedTime();
     sessionManager.current.recordAttempt({
       detectedFreq: freq,
@@ -140,18 +369,14 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
       millisToCorrect: elapsed
     });
     
-    // Show success feedback with animation
-    setFeedback('✓ Correct! Nice work!');
+    setFeedback(octaveAdjusted ? '✓ Correct! Harmonic locked in!' : '✓ Correct! Nice work!');
     setFeedbackType('correct');
     consecutiveCorrectRef.current = 0;
     
-    // Advance to next prompt after brief delay
     setTimeout(() => {
-      const nextPrompt = sessionManager.current!.nextPrompt();
-      setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
-      setFeedback('');
-      setFeedbackType('neutral');
-      promptAnswered.current = false;
+      if (!sessionManager.current) return;
+      const nextPrompt = sessionManager.current.nextPrompt();
+      applyPrompt(nextPrompt);
     }, 1200);
   };
 
@@ -159,27 +384,37 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
     if (!sessionManager.current || promptAnswered.current) return;
     
     promptAnswered.current = true;
+    clearTimer();
+    failureHandledRef.current = true;
+    pendingAttemptRef.current = null;
+    lastAttemptRef.current = null;
+    
     const answer = sessionManager.current.revealAnswer();
     if (answer) {
-      setFeedback(`Answer: Fret ${answer.fret} on ${getStringName(answer.string)} string`);
+      setFeedback(`Answer: Fret ${answer.fret} on string ${answer.string}`);
       setFeedbackType('neutral');
       
       setTimeout(() => {
-        const nextPrompt = sessionManager.current!.nextPrompt();
-        setTargetPrompt(`${nextPrompt.displayName} on ${getStringName(nextPrompt.position.string)} string`);
-        setFeedback('');
-        setFeedbackType('neutral');
-        promptAnswered.current = false;
+        if (!sessionManager.current) return;
+        const nextPrompt = sessionManager.current.nextPrompt();
+        applyPrompt(nextPrompt);
       }, 2000);
     }
   };
 
   const handleComplete = () => {
-    if (sessionManager.current) {
-      const stats = sessionManager.current.getStats();
-      stopListening();
-      onComplete(stats);
-    }
+    if (!sessionManager.current) return;
+    
+    const baseStats = sessionManager.current.getStats();
+    const masterySummary = applyMasteryUpdates(baseStats);
+    sessionManager.current.setMasterySummary(masterySummary);
+    const finalStats: SessionStats = {
+      ...sessionManager.current.getStats(),
+      masterySummary
+    };
+    
+    stopListening();
+    onComplete(finalStats);
   };
 
   return (
@@ -204,6 +439,10 @@ export default function PracticeScreen({ config, onComplete }: PracticeScreenPro
               {feedback}
             </p>
           )}
+          <div className="flex items-center justify-center gap-6 text-sm text-muted-foreground font-mono">
+            <span>Tries left: {Math.max(attemptsLeft, 0)}</span>
+            <span>Time left: {Math.max(timeLeft, 0)}s</span>
+          </div>
         </div>
       </Card>
 

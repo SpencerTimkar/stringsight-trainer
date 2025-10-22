@@ -3,8 +3,8 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
-import { Switch } from '@/components/ui/switch';
 import { SessionConfig } from '@/lib/trainer/sessionManager';
+import { DIFFICULTY_SETTINGS, DifficultyLevel } from '@/lib/trainer/difficulty';
 import { getStringName } from '@/lib/music/noteMapping';
 
 interface SettingsScreenProps {
@@ -14,12 +14,20 @@ interface SettingsScreenProps {
 export default function SettingsScreen({ onStart }: SettingsScreenProps) {
   const [config, setConfig] = useState<SessionConfig>({
     enabledStrings: [6, 5, 4, 3, 2, 1],
-    minFret: 0,
-    maxFret: 12,
+    minFret: 1,
+    maxFret: 11,
     toleranceCents: 25,
-    mode: 'untimed',
+    difficulty: 'easy',
     enharmonicPolicy: 'random'
   });
+
+  const difficultyOptions = (Object.entries(DIFFICULTY_SETTINGS) as Array<
+    [DifficultyLevel, (typeof DIFFICULTY_SETTINGS)[DifficultyLevel]]
+  >).map(([value, settings]) => ({
+    value,
+    label: value.charAt(0).toUpperCase() + value.slice(1),
+    description: `${settings.maxAttempts} ${settings.maxAttempts === 1 ? 'try' : 'tries'} · ${settings.timeLimit}s`
+  }));
 
   const toggleString = (string: number) => {
     setConfig(prev => ({
@@ -63,6 +71,24 @@ export default function SettingsScreen({ onStart }: SettingsScreenProps) {
                 >
                   <span className="text-lg font-bold">{string}</span>
                   <span className="text-xs">{getStringName(string)}</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          {/* Difficulty */}
+          <div className="space-y-3">
+            <Label className="text-base">Difficulty</Label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {difficultyOptions.map(option => (
+                <Button
+                  key={option.value}
+                  variant={config.difficulty === option.value ? 'default' : 'outline'}
+                  onClick={() => setConfig(prev => ({ ...prev, difficulty: option.value }))}
+                  className="flex flex-col items-start gap-1 py-3"
+                >
+                  <span className="text-sm font-semibold">{option.label}</span>
+                  <span className="text-xs text-muted-foreground">{option.description}</span>
                 </Button>
               ))}
             </div>

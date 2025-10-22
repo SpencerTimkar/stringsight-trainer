@@ -17,6 +17,14 @@ export interface GuitarPosition {
   note: Note;
 }
 
+export interface ValidationResult {
+  isCorrect: boolean;
+  cents: number;
+  feedback: string;
+  normalizedFreq: number;
+  octaveAdjusted: boolean;
+}
+
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const NOTE_NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
 
@@ -170,42 +178,79 @@ export function validatePosition(
   detectedFreq: number,
   targetPosition: GuitarPosition,
   toleranceCents: number = 25
-): { isCorrect: boolean; cents: number; feedback: string } {
-  const cents = calculateCents(detectedFreq, targetPosition.note.midi);
-  const absCents = Math.abs(cents);
+): ValidationResult {
+  const targetMidi = targetPosition.note.midi;
+  const frequencyCandidates = [
+    { freq: detectedFreq, octaveAdjusted: false },
+    { freq: detectedFreq / 2, octaveAdjusted: true },
+    { freq: detectedFreq * 2, octaveAdjusted: true }
+  ].filter(candidate => candidate.freq > 0 && candidate.freq < 5000);
+  
+  if (frequencyCandidates.length === 0) {
+    return {
+      isCorrect: false,
+      cents: 0,
+      feedback: '',
+      normalizedFreq: detectedFreq,
+      octaveAdjusted: false
+    };
+  }
+  
+  let bestCandidate = frequencyCandidates[0];
+  let bestCents = calculateCents(bestCandidate.freq, targetMidi);
+  
+  for (let i = 1; i < frequencyCandidates.length; i++) {
+    const candidate = frequencyCandidates[i];
+    const candidateCents = calculateCents(candidate.freq, targetMidi);
+    
+    if (Math.abs(candidateCents) < Math.abs(bestCents)) {
+      bestCandidate = candidate;
+      bestCents = candidateCents;
+    }
+  }
+  
+  const absCents = Math.abs(bestCents);
+  const octaveAdjusted = bestCandidate.octaveAdjusted;
   
   if (absCents <= toleranceCents) {
     return {
       isCorrect: true,
-      cents,
-      feedback: 'Perfect!'
+      cents: bestCents,
+      feedback: octaveAdjusted ? 'Perfect! (harmonic detected)' : 'Perfect!',
+      normalizedFreq: bestCandidate.freq,
+      octaveAdjusted
     };
   }
   
-  // Provide helpful feedback
   const detectedMidi = frequencyToMidi(detectedFreq);
-  const midiDiff = detectedMidi - targetPosition.note.midi;
+  const midiDiff = detectedMidi - targetMidi;
   
-  if (Math.abs(midiDiff) === 12 || Math.abs(midiDiff) === -12) {
+  if (Math.abs(midiDiff) >= 12) {
     return {
       isCorrect: false,
-      cents,
-      feedback: 'Different octave'
+      cents: bestCents,
+      feedback: '',
+      normalizedFreq: bestCandidate.freq,
+      octaveAdjusted
     };
   }
   
   if (absCents > 50) {
     return {
       isCorrect: false,
-      cents,
-      feedback: cents > 0 ? 'Too high' : 'Too low'
+      cents: bestCents,
+      feedback: '',
+      normalizedFreq: bestCandidate.freq,
+      octaveAdjusted
     };
   }
   
   return {
     isCorrect: false,
-    cents,
-    feedback: `Off by ${absCents.toFixed(0)} cents`
+    cents: bestCents,
+    feedback: '',
+    normalizedFreq: bestCandidate.freq,
+    octaveAdjusted
   };
 }
 

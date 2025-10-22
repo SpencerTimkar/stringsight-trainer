@@ -4,15 +4,15 @@
  */
 
 import { GuitarPosition, generatePositions, getTargetPosition } from '../music/noteMapping';
+import { DifficultyLevel } from './difficulty';
 
 export interface SessionConfig {
   enabledStrings: number[];
   minFret: number;
   maxFret: number;
   toleranceCents: number;
-  mode: 'untimed' | 'timed';
+  difficulty: DifficultyLevel;
   enharmonicPolicy: 'random' | 'sharps' | 'flats';
-  timeLimit?: number; // seconds per prompt in timed mode
 }
 
 export interface Attempt {
@@ -35,8 +35,22 @@ export interface SessionStats {
   correctAttempts: number;
   totalAttempts: number;
   averageTime: number;
-  perStringAccuracy: Map<number, { correct: number; total: number }>;
+  difficulty: DifficultyLevel;
+  perStringPerformance: Map<number, {
+    correct: number;
+    total: number;
+    totalCorrectMillis: number;
+    averageMillis: number;
+  }>;
   missedPositions: Array<{ position: GuitarPosition; missCount: number }>;
+  correctCount: number;
+  totalCorrectMillis: number;
+  masterySummary?: Record<number, {
+    previousRating: number;
+    newRating: number;
+    delta: number;
+    masteryLevel: string;
+  }>;
 }
 
 export class SessionManager {
@@ -67,8 +81,11 @@ export class SessionManager {
       correctAttempts: 0,
       totalAttempts: 0,
       averageTime: 0,
-      perStringAccuracy: new Map(),
-      missedPositions: []
+      difficulty: config.difficulty,
+      perStringPerformance: new Map(),
+      missedPositions: [],
+      correctCount: 0,
+      totalCorrectMillis: 0
     };
   }
 
@@ -126,14 +143,15 @@ export class SessionManager {
     
     if (attempt.isCorrect) {
       this.sessionStats.correctAttempts++;
-      this.updatePerStringStats(true);
+      this.sessionStats.correctCount++;
+      this.sessionStats.totalCorrectMillis += attempt.millisToCorrect;
     } else {
-      this.updatePerStringStats(false);
-      
       if (!attempt.revealed) {
         this.trackMissedPosition();
       }
     }
+    
+    this.updatePerStringPerformance(attempt);
   }
 
   /**
@@ -175,14 +193,47 @@ export class SessionManager {
    * Get session statistics
    */
   getStats(): SessionStats {
-    // Calculate average time for correct attempts
-    const correctAttempts = this.currentAttempts.filter(a => a.isCorrect);
-    if (correctAttempts.length > 0) {
-      const totalTime = correctAttempts.reduce((sum, a) => sum + a.millisToCorrect, 0);
-      this.sessionStats.averageTime = totalTime / correctAttempts.length;
-    }
+    const averageTime = this.sessionStats.correctCount > 0
+      ? this.sessionStats.totalCorrectMillis / this.sessionStats.correctCount
+      : 0;
     
-    return this.sessionStats;
+    const perStringPerformance = new Map<number, {
+      correct: number;
+      total: number;
+      totalCorrectMillis: number;
+      averageMillis: number;
+    }>();
+    
+    this.sessionStats.perStringPerformance.forEach((value, string) => {
+      const averageMillis = value.correct > 0
+        ? value.totalCorrectMillis / value.correct
+        : 0;
+      
+      perStringPerformance.set(string, {
+        correct: value.correct,
+        total: value.total,
+        totalCorrectMillis: value.totalCorrectMillis,
+        averageMillis
+      });
+    });
+    
+    this.sessionStats.averageTime = averageTime;
+    
+    const masterySummary = this.sessionStats.masterySummary
+      ? Object.fromEntries(
+          Object.entries(this.sessionStats.masterySummary).map(([key, entry]) => [
+            key,
+            { ...entry }
+          ])
+        )
+      : undefined;
+    
+    return {
+      ...this.sessionStats,
+      averageTime,
+      perStringPerformance,
+      masterySummary
+    };
   }
 
   private getPositionKey(position: GuitarPosition): string {
@@ -214,17 +265,35 @@ export class SessionManager {
     };
     return flats[noteName] || noteName;
   }
+  
+  setMasterySummary(summary: SessionStats['masterySummary'] | undefined): void {
+    this.sessionStats.masterySummary = summary;
+  }
 
-  private updatePerStringStats(isCorrect: boolean): void {
+  private updatePerStringPerformance(attempt: Attempt): void {
     if (!this.currentPrompt) return;
     
     const string = this.currentPrompt.position.string;
-    const stats = this.sessionStats.perStringAccuracy.get(string) || { correct: 0, total: 0 };
+    const existing = this.sessionStats.perStringPerformance.get(string) || {
+      correct: 0,
+      total: 0,
+      totalCorrectMillis: 0,
+      averageMillis: 0
+    };
     
-    stats.total++;
-    if (isCorrect) stats.correct++;
+    const updated = { ...existing };
+    updated.total++;
     
-    this.sessionStats.perStringAccuracy.set(string, stats);
+    if (attempt.isCorrect) {
+      updated.correct++;
+      updated.totalCorrectMillis += attempt.millisToCorrect;
+    }
+    
+    updated.averageMillis = updated.correct > 0
+      ? updated.totalCorrectMillis / updated.correct
+      : 0;
+    
+    this.sessionStats.perStringPerformance.set(string, updated);
   }
 
   private trackMissedPosition(): void {

@@ -16,6 +16,7 @@ export default function ResultsScreen({ stats, onRestart, onNewSession }: Result
     : 0;
 
   const avgTimeSeconds = stats.averageTime / 1000;
+  const difficultyLabel = stats.difficulty.charAt(0).toUpperCase() + stats.difficulty.slice(1);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
@@ -27,6 +28,9 @@ export default function ResultsScreen({ stats, onRestart, onNewSession }: Result
           </div>
           <h1 className="text-4xl font-bold">Session Complete!</h1>
           <p className="text-muted-foreground">Here's how you performed</p>
+          <p className="text-xs font-mono text-muted-foreground uppercase tracking-wide">
+            Difficulty: {difficultyLabel}
+          </p>
         </div>
 
         {/* Overall Stats */}
@@ -60,12 +64,19 @@ export default function ResultsScreen({ stats, onRestart, onNewSession }: Result
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Performance by String</h2>
           <div className="space-y-3">
-            {Array.from(stats.perStringAccuracy.entries())
+            {Array.from(stats.perStringPerformance.entries())
               .sort(([a], [b]) => b - a)
               .map(([string, stringStats]) => {
                 const stringAccuracy = stringStats.total > 0
                   ? Math.round((stringStats.correct / stringStats.total) * 100)
                   : 0;
+                const mastery = stats.masterySummary?.[string];
+                const averageSeconds = stringStats.correct > 0
+                  ? (stringStats.averageMillis / 1000).toFixed(1)
+                  : '—';
+                const delta = mastery
+                  ? `${mastery.delta >= 0 ? '+' : ''}${mastery.delta}`
+                  : null;
 
                 return (
                   <div key={string} className="space-y-2">
@@ -82,6 +93,15 @@ export default function ResultsScreen({ stats, onRestart, onNewSession }: Result
                         className="h-full bg-primary transition-all"
                         style={{ width: `${stringAccuracy}%` }}
                       />
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between text-xs text-muted-foreground">
+                      <span>Avg. time: {averageSeconds}s</span>
+                      {mastery && (
+                        <span>
+                          Mastery: {mastery.masteryLevel} • Rating {Math.round(mastery.newRating)}
+                          {delta && ` (${delta})`}
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
